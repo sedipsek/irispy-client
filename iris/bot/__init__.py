@@ -88,6 +88,7 @@ class Bot:
                     self.bot_id = self.api.get_info()["bot_id"]
                     while True:
                         recv = ws.recv()
+
                         try:
                             data: dict = json.loads(recv)
                             data["raw"] = data.get("json")
@@ -96,14 +97,14 @@ class Bot:
                             self.__process_iris_request(IrisRequest(**data))
                         except Exception as e:
                             print(
-                                "Iris 이벤트를 처리 중 오류가 발생했습니다: {}", e
+                                f"Iris 이벤트를 처리 중 오류가 발생했습니다: {e}"
                             )
             except KeyboardInterrupt:
                 print("웹소켓 연결을 종료합니다")
                 break
             
             except Exception as e:
-                print("웹소켓 연결 오류: {}", e)
+                print(f"웹소켓 연결 오류: {e}")
                 print("3초 후 재연결합니다")
 
             time.sleep(3)

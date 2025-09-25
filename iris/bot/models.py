@@ -1,36 +1,62 @@
 from dataclasses import dataclass
-import typing as t
-from iris.bot._internal.iris import IrisAPI
 import json
 from functools import cached_property
-from PIL import Image
 from io import BytesIO, BufferedIOBase
+import typing as t
+
 import requests
+from requests import RequestException
+
+from PIL import Image
+
+from iris.bot._internal.iris import IrisAPI
+
+
+DEFAULT_REQUEST_TIMEOUT = 5
 
 @dataclass
 class Message:
     id: int
     type: int
     msg: str
-    attachment: str
-    v: dict
+    attachment: t.Union[str, dict[str, t.Any]]
+    v: dict[str, t.Any]
 
     def __post_init__(self):
-        self.command, *param = self.msg.split(" ", 1)
+        msg_text = self.msg or ""
+        self.msg = msg_text
+
+        self.command, *param = msg_text.split(" ", 1)
         self.has_param = len(param) > 0
         self.param = param[0] if self.has_param else None
-        try:
-            self.attachment = json.loads(self.attachment)
-        except Exception:
-            pass
-        if self.type in [71,27,2,71+16384,27+16384,2+16384]:
+
+        attachment_data: t.Optional[dict] = None
+        if isinstance(self.attachment, str):
+            try:
+                attachment_data = json.loads(self.attachment)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                attachment_data = None
+        elif isinstance(self.attachment, dict):
+            attachment_data = self.attachment
+
+        self.attachment = attachment_data or {}
+
+        if self.type in {71, 27, 2, 71 + 16384, 27 + 16384, 2 + 16384}:
             self.image = ChatImage(self)
         else:
             self.image = None
-        if len(self.msg) >= 3900 and "path" in self.attachment.keys():
-            attachment_full_msg = requests.get('https://dn-m.talk.kakao.com/'+self.attachment['path'])
-            attachment_full_msg.encoding = "utf-8"
-            self.msg = attachment_full_msg.text
+
+        if len(self.msg) >= 3900 and "path" in self.attachment:
+            try:
+                attachment_full_msg = requests.get(
+                    "https://dn-m.talk.kakao.com/" + self.attachment["path"],
+                    timeout=DEFAULT_REQUEST_TIMEOUT,
+                )
+                attachment_full_msg.raise_for_status()
+                attachment_full_msg.encoding = "utf-8"
+                self.msg = attachment_full_msg.text
+            except RequestException as exc:
+                print(f"메시지 본문을 불러오지 못했습니다: {exc}")
     
     def __repr__(self) -> str:
         return f"Message(id={self.id}, type={self.type}, msg={self.msg})"
@@ -162,12 +188,16 @@ class Avatar:
     
     def __get_image_from_url(self, url: str) -> Image:
         try:
-            img = Image.open(BytesIO(requests.get(url).content))
-            img = img.convert("RGBA")
-            return img
+            response = requests.get(url, timeout=DEFAULT_REQUEST_TIMEOUT)
+            response.raise_for_status()
+            img = Image.open(BytesIO(response.content))
+            return img.convert("RGBA")
+        except RequestException as exc:
+            print(f"아바타 이미지 로딩 실패: {exc}")
         except Exception as e:
             print(f"아바타 이미지 로딩 실패: {e}")
-            return None
+
+        return None
 
     def __repr__(self) -> str:
         return f"Avatar(url={self.url})"
@@ -175,43 +205,55 @@ class Avatar:
 class ChatImage:
     def __init__(self, message: Message):
         self.url = self.__get_photo_url(message)
-        
+
     @cached_property
     def img(self):
         if not self.url:
             return None
 
+        images = []
+        for url in self.url:
+            img = self.__get_image_from_url(url)
+            if img:
+                images.append(img)
+
+        return images or None
+
+    def __get_photo_url(self, message) -> t.Optional[list[str]]:
+        attachment = getattr(message, "attachment", {}) or {}
+        urls: list[str] = []
+
         try:
-            imgs = []
-            for url in self.url:
-                imgs.append(self.__get_image_from_url(url))
-            return imgs
-        except Exception as e:
-            return None
-    
-    def __get_photo_url(self, message) -> list:        
-        try:
-            urls = []
             if message.type == 71:
-                for item in message.attachment["C"]["THL"]:
-                    urls.append(item["TH"]["THU"])
+                for item in attachment.get("C", {}).get("THL", []):
+                    url = item.get("TH", {}).get("THU")
+                    if url:
+                        urls.append(url)
             elif message.type == 27:
-                for item in message.attachment["imageUrls"]:
-                    urls.append(item)
+                for item in attachment.get("imageUrls", []):
+                    if item:
+                        urls.append(item)
             else:
-                urls.append(message.attachment["url"])
-            return urls
-        except Exception as e:
+                url = attachment.get("url")
+                if url:
+                    urls.append(url)
+        except AttributeError:
             return None
+
+        return urls or None
     
     def __get_image_from_url(self, url: str) -> Image:
         try:
-            img = Image.open(BytesIO(requests.get(url).content))
-            img = img.convert("RGBA")
-            return img
+            response = requests.get(url, timeout=DEFAULT_REQUEST_TIMEOUT)
+            response.raise_for_status()
+            img = Image.open(BytesIO(response.content))
+            return img.convert("RGBA")
+        except RequestException as exc:
+            print(f"이미지 로딩 실패: {exc}")
         except Exception as e:
             print(f"이미지 로딩 실패: {e}")
-            return None
+
+        return None
 
     def __repr__(self) -> str:
         return f"ChatImage(url={self.url})"
